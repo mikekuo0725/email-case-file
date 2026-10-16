@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.DS_Store
+# 案卷整理的輸出與信件資料不要上傳
+案卷整理_*
+*.msg
+*.eml
+*.pst
