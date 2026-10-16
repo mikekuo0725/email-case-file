@@ -21,6 +21,9 @@ Zip the `email-case-file/` folder into a `.skill` file, or import it directly in
 ## Dependencies
 `pip install extract-msg python-docx openpyxl` (reading attachments also needs `pypdf python-pptx`)
 
+## License
+MIT. See [LICENSE](LICENSE).
+
 ---
 
 # email-case-file（中文）
@@ -43,3 +46,6 @@ Claude skill：把資料夾裡的 Outlook 信件（.msg、.eml、.pst）整理�
 
 ## 相依套件
 `pip install extract-msg python-docx openpyxl`（讀附件另需 `pypdf python-pptx`）
+
+## 授權
+MIT 授權，詳見 [LICENSE](LICENSE)。
