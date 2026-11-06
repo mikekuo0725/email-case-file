@@ -11,6 +11,7 @@ A Claude skill that turns a folder of saved Outlook emails (.msg, .eml, .pst) in
 - Incremental updates: only new emails are processed, with a "changes since the last report" section
 - People list with alias merging; auto-replies and system notifications are filtered out
 - Optional: read attachment contents and compare versions (`--read-attachments`)
+- Plain-language writing: the report text Claude writes avoids stock AI phrasing and uses Taiwan wording and full-width punctuation; original quotes, names, and numbers are never changed (rules adapted from [speak-human-tw](https://github.com/Raymondhou0917/speak-human-tw), MIT)
 - Output: Word (plus PDF and HTML), a one-page meeting brief, a to-do Excel file, and a calendar .ics file; every source link opens the original email
 
 The skill's instructions and report output are in Traditional Chinese.
@@ -39,6 +40,7 @@ Claude skill：把資料夾裡的 Outlook 信件（.msg、.eml、.pst）整理�
 - 增量更新：只處理新信，列出「自上次報告以來的變化」
 - 人物表與別名合併、系統信自動排除
 - 可選：讀取附件內容並比對版本差異（`--read-attachments`）
+- 說人話：報告裡 Claude 自己寫的字會去掉 AI 套路句、改用台灣用語與全形標點；原文、人名、數字一字不動（規則改編自 [speak-human-tw](https://github.com/Raymondhou0917/speak-human-tw)，MIT 授權）
 - 輸出：Word（可加 PDF、HTML）、一頁會議速覽、待辦 Excel、行事曆 .ics；出處可點選開啟原信
 
 ## 安裝
