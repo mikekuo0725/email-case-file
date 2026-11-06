@@ -54,7 +54,8 @@ def conf_label(c):
 def src_text(s):
     if not s:
         return ""
-    parts = [s.get("id", ""), s.get("date", ""), s.get("sender", ""), f"「{s.get('subject', '')}」"]
+    parts = [s.get("id", ""), s.get("date", ""), s.get("sender", ""),
+             f"「{s['subject']}」" if s.get("subject") else ""]
     if s.get("attachment"):
         parts.append(f"附件《{s['attachment']}》")
     return "　".join(p for p in parts if p)
@@ -1064,7 +1065,10 @@ def save_sidecar(r, emails_data, path):
     idx = [{"uid": e.get("uid"), "alt_uids": e.get("alt_uids", []), "src": e.get("src", "top"),
             "id": e["id"], "file": e["file"], "date": e.get("date_display", "")}
            for e in (emails_data or {}).get("emails", [])]
-    Path(path).write_text(json.dumps({"generated_date": r["generated_date"], "report": rep_, "email_index": idx},
+    didx = [{"uid": d.get("uid"), "id": d["id"], "file": d["file"], "modified": d.get("modified_display", "")}
+            for d in (emails_data or {}).get("documents", [])]
+    Path(path).write_text(json.dumps({"generated_date": r["generated_date"], "report": rep_, "email_index": idx,
+                                      "document_index": didx},
                                      ensure_ascii=False, indent=1), encoding="utf-8")
 
 
@@ -1077,11 +1081,17 @@ def main():
     ap.add_argument("--prev", help="指定上次報告資料檔（*.data.json）；預設用 emails.json 記錄的那一份")
     ap.add_argument("--no-prev", action="store_true", help="不產生「自上次報告以來的變化」")
     args = ap.parse_args()
+    try:   # Windows 主控台預設 cp950，中文訊息會變亂碼
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     emails_data = load_json(args.emails) if args.emails else None
     files = {e["id"]: e["file"] for e in emails_data["emails"]} if emails_data else {}
+    if emails_data:   # 資料夾裡的其他檔案（D001…）也能當出處，點了直接開檔
+        files.update({d["id"]: d["file"] for d in emails_data.get("documents", [])})
 
     r = json.loads(Path(args.report).read_text(encoding="utf-8"))
     r["_outdir"] = str(outdir)
