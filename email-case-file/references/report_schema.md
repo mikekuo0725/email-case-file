@@ -136,6 +136,7 @@
 - `people`：人物表。`can_decide` 填「是」「否」「部分」或「不明」；`emails` 要列出這個人用過的所有位址，下次增量整理時靠它（和名稱）認出同一個人。`people.json` 裡帶 `confirmed` 的人是上次已確認過的，直接沿用。
 - `changes_summary`：只在增量模式填。「自上次報告以來的變化」那一節的清單（新增決策、新增待辦、剛逾期、已移出待辦、已不在未決清單）由 `build_report.py` 比對上次的 `*.data.json` 自動產生，不用自己列。
 - `attachment_notes`：選填，只有用 `--read-attachments` 讀過附件內容才填。寫附件裡的重點（價格、規格、數量、交期），以及和前一版相比變了什麼（可參考 `emails.txt` 的版本差異），一條一句。附件沒讀、讀不到或沒有重點就省略。
+- `source.id` 用 D 編號：依據來自資料夾裡的其他檔案（不是信件，也不是信的附件）時，`id` 填 `D001` 這類編號，`attachment` 填檔名，`subject`、`sender` 可省略；`date` 填檔案內文寫的日期，沒有才用修改時間。`build_report.py --emails` 會補上 `file`，報告裡點了直接開那個檔案。
 - `source.attachment`：選填。決策、未決議題、待辦、已完成的依據是附件內容而不是信件本文時填附件檔名，報告出處會顯示「附件《檔名》」。
 - 信件編號：`parse_emails.py` 會把轉寄信裡引用的舊信拆成獨立的信（`src: "quote"`，`container` 是收錄它的那封），跨檔去重後依真實寄件時間編號。引用信的時間取自引用標頭，時區是推估的（`date_approx: true`）；同一天內先後順序若關係到「誰先說」，回原信確認。
 - `source.file`、`timeline[].file`：信件檔案相對於信件資料夾的路徑，用來產生超連結。可以省略，`build_report.py --emails` 會依信件編號補齊。

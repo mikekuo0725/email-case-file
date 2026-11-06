@@ -6,6 +6,8 @@
 [![Claude Skill](https://img.shields.io/badge/Claude-Skill-d97757.svg)](email-case-file/SKILL.md)
 [![zh-TW](https://img.shields.io/badge/zh--TW-Taiwan-e4002b.svg)](email-case-file/references/plain_writing.md)
 [![Outlook](https://img.shields.io/badge/.msg%20·%20.eml%20·%20.pst-supported-0078d4.svg)](#它怎麼做)
+[![Files](https://img.shields.io/badge/PDF%20·%20Word%20·%20Excel%20·%20PPT-supported-2e9e5b.svg)](#功能一覽)
+[![English](https://img.shields.io/badge/English-plain%20writing-555.svg)](email-case-file/references/plain_writing_en.md)
 
 ![Email 案卷整理：把一資料夾的 Outlook 信件，變成一份「這個案子現在走到哪」的報告](assets/banner.svg)
 
@@ -18,7 +20,7 @@
 
 ### ✨ 把信件資料夾交給它，這些它都幫你整理好。
 
-一個給 Claude 用的 skill：讀你存下來的 Outlook 信件，整理成一份 Word 案卷報告。**每一條決策都附上決定者、日期，還有信裡的原文當證據**，點一下就能打開原始信件。
+一個給 Claude 用的 skill：讀你存下來的 Outlook 信件，連同資料夾裡的報價單、規格書、會議記錄（PDF、Word、Excel 都可以），整理成一份 Word 案卷報告。**每一條決策都附上決定者、日期，還有信裡的原文當證據**，點一下就能打開原始信件。
 
 **業務 · 採購 · 專案管理 · 客訴處理** —— 客戶開發案 · 報價議價 · 訂單交期 · 模具分攤 · 跨部門協調
 
@@ -103,7 +105,7 @@ pip install extract-msg python-docx openpyxl
 固定六步：
 
 1. **確認資料夾**：要 Word 就好，還是要加 PDF、一頁速覽、待辦 Excel、行事曆檔
-2. **解析信件**：拆開轉寄信裡夾帶的舊信、跨檔去重、依真實寄件時間排序
+2. **解析信件和檔案**：拆開轉寄信裡夾帶的舊信、跨檔去重、依真實寄件時間排序；資料夾裡的 PDF、Word、Excel 也一起讀
 3. **分議題、整理人物表**：停下來讓你確認
 4. **逐一議題萃取**：決策、未決、待辦、已完成，每一條都標信心高／中／低
 5. **寫成報告資料**：照「說人話」規則自己檢查一遍文字
@@ -120,10 +122,12 @@ pip install extract-msg python-docx openpyxl
 | 💬 原文為證 | 決策附上信裡的原句，保留原語言不翻譯 |
 | ⏳ 懸而未決天數 | 自動算出每個問題已經等了幾天 |
 | 💸 數字怎麼變 | 金額、單價、數量來回談的每一版：誰提的、哪天、多少 |
-| 📄 讀附件 | 可選。讀報價單、規格書，比對版本差異（例如單價 120 → 125） |
+| 🗂️ 讀資料夾裡的檔案 | 信件旁邊的 PDF、Word、Excel、PowerPoint、文字檔也會讀，編號 D001 起，可以當出處 |
+| 📄 讀附件 | 可選。讀信裡夾帶的報價單、規格書，比對版本差異（例如單價 120 → 125） |
 | 🔁 增量更新 | 下次只處理新信，報告最前面列出「上次之後有什麼變化」 |
 | 🤝 分工判讀 | 超過 120 封時，分給多個小幫手同時讀，再合併 |
 | 🗣️ 說人話 | Claude 寫的句子去掉 AI 套路、用台灣用語；原文、人名、數字一字不動 |
+| 🌏 English | 用英文跟 Claude 講話，報告文字就用淺白英文寫：先講結論、一句一件事 |
 
 ### 可以產出的檔案
 
@@ -160,6 +164,16 @@ pip install extract-msg python-docx openpyxl
 
 可以。資料夾裡留著上次產出的 `案卷整理_日期.data.json`，下次就只處理新信。這個檔案不要刪。
 
+### 資料夾裡除了信，還有 PDF、Excel，會讀嗎？
+
+會，預設就會讀。PDF、Word、Excel、PowerPoint、文字檔都可以；掃描的 PDF、圖片、CAD 只會列出檔名。不想讀的話跟 Claude 說「只看信件就好」。
+
+要注意一件事：這些檔案的時間是「修改時間」，複製或另存過就會變，不一定是真正簽核的日期。報告會以檔案內文寫的日期為準。
+
+### 英文可以用嗎？
+
+可以。用英文跟 Claude 講話，它寫的摘要、重點都會用淺白英文。不過報告的標題和表格欄位名稱目前還是中文。
+
 ### `.pst` 讀不到？
 
 `.pst` 需要電腦裡有 `readpst`。裝不起來的話，在 Outlook 把信另存成 `.msg` 就可以。
@@ -168,7 +182,8 @@ pip install extract-msg python-docx openpyxl
 
 ## 致謝
 
-- 報告文字的寫法規則改編自 [Raymondhou0917/speak-human-tw（說人話）](https://github.com/Raymondhou0917/speak-human-tw)，MIT 授權。這個 README 的版面也參考了它的設計
+- 中文報告的寫法規則改編自 [Raymondhou0917/speak-human-tw（說人話）](https://github.com/Raymondhou0917/speak-human-tw)，MIT 授權。這個 README 的版面也參考了它的設計
+- 英文報告的寫法規則改編自 [isas1/skills](https://github.com/isas1/skills) 的 `eli5-succinct`，MIT 授權
 
 ## 授權
 
@@ -181,20 +196,22 @@ pip install extract-msg python-docx openpyxl
 
 ### email-case-file
 
-A Claude skill that turns a folder of saved Outlook emails (.msg, .eml, .pst) into a Word "case file" report: where the case stands, who decided what and when, with the original quote as evidence.
+A Claude skill that turns a folder of saved Outlook emails (.msg, .eml, .pst), plus the PDF, Word, Excel and PowerPoint files saved next to them, into a Word "case file" report: where the case stands, who decided what and when, with the original quote as evidence.
 
 - Groups emails by topic and lists decisions (decider, date, original quote), open questions (with days pending), to-dos, and completed items
 - Splits quoted threads inside forwards and replies into separate emails, removes duplicates across files, and sorts by real send time
 - Links threads by reply headers, so a thread stays together when the subject changes
 - People list with alias merging and who can make decisions
 - "How the numbers changed" table for prices and quantities under negotiation
-- Optional: reads attachments and compares versions
+- Reads other files in the folder (PDF, Word, Excel, PowerPoint, text), numbered D001 onward, usable as sources
+- Optional: reads email attachments and compares versions
 - Incremental updates with a "changes since the last report" section
 - Large folders (120+ emails) are split across parallel subagents
-- Report text avoids stock AI phrasing and uses Taiwan wording (rules adapted from [speak-human-tw](https://github.com/Raymondhou0917/speak-human-tw), MIT)
+- Talk to Claude in English and the report text is written in plain English: answer first, one idea per sentence, active voice (rules adapted from [isas1/skills](https://github.com/isas1/skills) `eli5-succinct`, MIT). Section headings and table labels are still in Chinese
+- Chinese report text avoids stock AI phrasing and uses Taiwan wording (rules adapted from [speak-human-tw](https://github.com/Raymondhou0917/speak-human-tw), MIT)
 - Output: Word, plus PDF, HTML, one-page brief, Excel, and .ics on request
 
-The skill's instructions and report output are in Traditional Chinese.
+The skill's instructions and the report layout are in Traditional Chinese.
 
 **Install:** zip the `email-case-file/` folder and upload it in Claude's Skills settings, or copy it into `~/.claude/skills/` for Claude Code.
 

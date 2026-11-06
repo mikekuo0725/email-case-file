@@ -661,9 +661,10 @@ def _norm_lines(text):
     return [re.sub(r"\s+", " ", l).strip() for l in text.splitlines() if l.strip()]
 
 
-def process_attachments(pairs, out, excerpt_chars):
-    """把附件存到 <工作目錄>/attachments/<信件編號>/，抽出文字，並對同系列附件產生版本差異。"""
-    adir = out / "attachments"
+def process_attachments(pairs, out, excerpt_chars, subdir="attachments"):
+    """把附件存到 <工作目錄>/<subdir>/<編號>/，抽出文字，並對同系列附件產生版本差異。
+    信件附件用 attachments/；資料夾裡的其他檔案（D001…）用 documents/。"""
+    adir = out / subdir
     if adir.exists():
         shutil.rmtree(adir, ignore_errors=True)
     adir.mkdir(parents=True, exist_ok=True)
@@ -757,11 +758,12 @@ def process_attachments(pairs, out, excerpt_chars):
             "error": stats["error"], "diffs": n_diff, "missing": sorted(missing), "problems": problems[:10]}
 
 
-def write_att_details(f, x):
-    shown = [d for d in x.get("attachment_details", []) if not (d["status"] == "image" and d["size"] < SMALL_IMG)]
+def write_att_details(f, x, label="附件內容", keep_small_images=False):
+    shown = [d for d in x.get("attachment_details", [])
+             if keep_small_images or not (d["status"] == "image" and d["size"] < SMALL_IMG)]
     if not shown:
         return
-    f.write("附件內容：\n")
+    f.write(f"{label}：\n")
     for d in shown:
         tag = f"［{d['version_hint']}］" if d.get("version_hint") else ""
         if d["status"] == "ok":
@@ -943,6 +945,80 @@ def find_prev(folder):
     except Exception:
         return cands[-1], None
 
+# ---------- 資料夾裡的其他檔案（PDF、Word、Excel…，不是信件） ----------
+
+EMAIL_EXT = (".msg", ".eml", ".pst")
+DOC_SKIP_NAMES = {"thumbs.db", "desktop.ini", ".ds_store"}
+
+
+def _is_under(p, root):
+    try:
+        p.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def list_documents(folder, pattern, out):
+    """信件以外的檔案：排除本 skill 的報告、Office 暫存檔（~$）、隱藏檔與工作目錄。"""
+    docs = []
+    for p in folder.glob(pattern):
+        if not p.is_file() or p.suffix.lower() in EMAIL_EXT:
+            continue
+        if p.name.startswith(("案卷整理_", "~$", ".")) or p.name.lower() in DOC_SKIP_NAMES:
+            continue
+        if any(part.startswith(".") for part in p.relative_to(folder).parts[:-1]) or _is_under(p, out):
+            continue
+        docs.append(p)
+    return docs
+
+
+def collect_documents(paths, folder, out, prev, show_tz, excerpt_chars):
+    """每個檔案給一個 D 編號（依修改時間排序）。增量模式下，內容沒變的檔案沿用上次的編號。"""
+    prev_map = {d["uid"]: d["id"] for d in (prev or {}).get("document_index", []) if d.get("uid") and d.get("id")}
+    next_n = max([int(i[1:]) for i in prev_map.values() if i[1:].isdigit()] or [0])
+    entries = []
+    for p in paths:
+        st = p.stat()
+        rel = str(p.relative_to(folder)).replace("\\", "/")
+        ext = p.suffix.lower()
+        data = None
+        if ext not in IMG_EXT and st.st_size <= MAX_ATT_BYTES:
+            data = p.read_bytes()
+            uid = "d" + hashlib.sha1(data).hexdigest()[:11]
+        else:
+            uid = "d" + hashlib.sha1(f"{rel}|{st.st_size}|{int(st.st_mtime)}".encode("utf-8", "ignore")).hexdigest()[:11]
+        entries.append((st.st_mtime, rel, p, ext, st.st_size, uid, data))
+    entries.sort(key=lambda e: (e[0], e[1]))
+
+    items, pairs, used = [], [], set()
+    for i, (mtime, rel, p, ext, size, uid, data) in enumerate(entries, 1):
+        old = prev_map.get(uid) if prev else None
+        if old and old not in used:
+            did, is_new = old, False
+        elif prev:
+            next_n += 1
+            did, is_new = f"D{next_n:03d}", True
+        else:
+            did, is_new = f"D{i:03d}", False
+        used.add(did)
+        local = datetime.fromtimestamp(mtime, tz=timezone.utc).astimezone(show_tz)
+        it = {"id": did, "uid": uid, "is_new": is_new, "file": rel, "name": p.name, "ext": ext, "size": size,
+              "modified": local.isoformat(), "modified_display": local.strftime("%Y-%m-%d %H:%M"),
+              "attachment_details": []}
+        items.append(it)
+        base = {"name": p.name, "ext": ext, "size": size, "sha1": "", "status": "", "note": "", "meta": "",
+                "version_hint": version_hint(p.name), "saved": "", "text_file": "", "text_chars": 0, "excerpt": ""}
+        if ext in IMG_EXT:
+            it["attachment_details"] = [dict(base, status="image", note="圖片，未讀取內容；需要時用 view 直接看原檔")]
+        elif data is None:
+            it["attachment_details"] = [dict(base, status="too_large", note=f"檔案過大（{size // 1048576} MB），未讀取")]
+        else:
+            pairs.append((it, [(p.name, data)]))
+    stats = process_attachments(pairs, out, excerpt_chars, subdir="documents") if pairs else None
+    return items, stats
+
+
 # ---------- 主程式 ----------
 
 def main():
@@ -958,6 +1034,8 @@ def main():
                     help="讀取附件內容（PDF、Word、Excel、PowerPoint、文字檔），並比對同系列附件的版本差異")
     ap.add_argument("--attach-chars", type=int, default=500, help="emails.txt 中每個附件的摘錄字數，預設 500")
     ap.add_argument("--no-split", action="store_true", help="不要把引用前文拆成獨立信件（舊版行為）")
+    ap.add_argument("--no-documents", action="store_true",
+                    help="不要讀資料夾裡信件以外的檔案（PDF、Word、Excel、PowerPoint、文字檔…）")
     args = ap.parse_args()
     try:   # Windows 主控台預設 cp950，印到「［」這類字會當掉
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -973,8 +1051,9 @@ def main():
     extra_kw = load_exclude(args.exclude_file)
 
     pattern = "*" if args.no_recursive else "**/*"
-    files = [p for p in folder.glob(pattern) if p.is_file() and p.suffix.lower() in (".msg", ".eml", ".pst")]
+    files = [p for p in folder.glob(pattern) if p.is_file() and p.suffix.lower() in EMAIL_EXT]
     files = [p for p in files if not p.name.startswith("案卷整理_")]   # 排除本 skill 產出的報告
+    doc_paths = [] if args.no_documents else list_documents(folder, pattern, out)
 
     errors, raw, tmpdirs = [], [], []
     for p in sorted(files):
@@ -1151,6 +1230,9 @@ def main():
     for it in items:
         it.pop("_blobs", None)
 
+    documents, doc_stats = collect_documents(doc_paths, folder, out, prev, show_tz, args.attach_chars)
+    new_doc_count = sum(1 for d in documents if d["is_new"])
+
     dated = [x["date_display"][:10] for x in items if x["date"]]
     new_count = sum(1 for x in items if x["is_new"])
     sys_count = sum(1 for x in items if x["system"])
@@ -1177,6 +1259,9 @@ def main():
         "prev": prev_info,
         "errors": errors,
         "emails": items,
+        "document_count": len(documents),
+        "document_stats": doc_stats,
+        "documents": documents,
     }
     (out / "emails.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     (out / "people.json").write_text(json.dumps(
@@ -1216,6 +1301,19 @@ def main():
                 f.write("\n[引用前文摘錄]\n" + x["quoted_excerpt"] + "\n")
             f.write("\n")
 
+        if documents:
+            f.write(f"##### 資料夾裡的其他檔案（不是信件）：共 {len(documents)} 個"
+                    + (f"，本次新增或內容有變 {new_doc_count} 個，標 【新】" if prev_info else "")
+                    + "。時間是檔案修改時間，不是寄出時間。\n\n")
+            for d in documents:
+                tag = " 【新】" if d["is_new"] else ""
+                if prev_info and not d["is_new"]:
+                    f.write(f"===== {d['id']} | {d['modified_display']} | {d['file']}（上次已讀過，內容沒變） =====\n\n")
+                    continue
+                f.write(f"===== {d['id']} | 修改時間 {d['modified_display']}{tag} =====\n檔案：{d['file']}\n")
+                write_att_details(f, d, label="檔案內容", keep_small_images=True)
+                f.write("\n")
+
     for t in tmpdirs:
         shutil.rmtree(t, ignore_errors=True)
 
@@ -1228,7 +1326,9 @@ def main():
         print(f"期間：{dated[0]} 至 {dated[-1]}")
     if prev_info:
         print(f"\n【增量模式】比對上次報告 {prev_info['generated_date']}：新增 {new_count} 封"
-              + ("（沒有新信，不需要重新整理）" if new_count == 0 else "，舊信沿用原編號"))
+              + (("（沒有新信，也沒有新檔案，不需要重新整理）" if new_doc_count == 0
+                  else f"；但資料夾裡有 {new_doc_count} 個新增或內容有變的檔案")
+                 if new_count == 0 else "，舊信沿用原編號"))
     if prev_warn:
         print("\n注意：" + prev_warn)
     if att_stats:
@@ -1240,6 +1340,19 @@ def main():
         for pr in att_stats["problems"]:
             print("  - " + pr)
         print(f"  附件與抽出的文字存在：{out/'attachments'}")
+    if documents:
+        ds = doc_stats or {}
+        print(f"\n【資料夾裡的其他檔案】共 {len(documents)} 個（D001 起編號）：已讀取 {ds.get('ok', 0)}、"
+              f"內容相同 {ds.get('duplicate', 0)}、無文字 {ds.get('empty', 0)}、未支援 {ds.get('skipped', 0)}、"
+              f"失敗 {ds.get('error', 0)}；圖片與過大的檔案 "
+              f"{sum(1 for d in documents for x in d['attachment_details'] if x['status'] in ('image', 'too_large'))}；"
+              f"版本差異 {ds.get('diffs', 0)} 組"
+              + (f"；本次新增或內容有變 {new_doc_count} 個" if prev_info else ""))
+        for m in ds.get("missing", []):
+            print(f"  缺少套件：{m}")
+        for pr in ds.get("problems", []):
+            print("  - " + pr)
+        print(f"  抽出的文字存在：{out/'documents'}")
     print("\n主旨分組統計（分議題的起點，不是答案；不含系統信）：")
     for subj, n in Counter(x["subject_norm"] for x in items if not x["system"]).most_common(30):
         print(f"  {n:>3} 封  {subj}")
