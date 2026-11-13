@@ -16,6 +16,7 @@ import difflib
 import hashlib
 import html
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -436,10 +437,23 @@ def parse_eml(path, keep=False):
     }
 
 
+def find_soffice():
+    """找 LibreOffice。Windows、macOS 裝好後通常不在 PATH 裡，要到預設安裝位置找。"""
+    hit = shutil.which("soffice") or shutil.which("libreoffice")
+    if hit:
+        return hit
+    cands = [Path(os.environ[k]) / "LibreOffice" / "program" / "soffice.exe"
+             for k in ("ProgramFiles", "ProgramFiles(x86)") if os.environ.get(k)]
+    cands.append(Path("/Applications/LibreOffice.app/Contents/MacOS/soffice"))
+    return next((str(c) for c in cands if c.is_file()), None)
+
+
 def expand_pst(path, errors):
     """用 readpst 把 .pst 展開成 .eml，回傳 (暫存目錄, eml 路徑清單)"""
     if not shutil.which("readpst"):
-        errors.append(f"{path.name}: 找不到 readpst，請安裝 pst-utils，或在 Outlook 另存為 .msg")
+        errors.append(f"{path.name}: 找不到 readpst。" + (
+            "Windows 沒有現成的 readpst，請在 Outlook 把這個 .pst 裡的信選起來，拖到資料夾存成 .msg" if os.name == "nt"
+            else "請安裝 pst-utils（apt-get install -y pst-utils 或 brew install libpst），或在 Outlook 另存為 .msg"))
         return None, []
     tmp = Path(tempfile.mkdtemp(prefix="pst_"))
     r = subprocess.run(["readpst", "-e", "-q", "-o", str(tmp), str(path)], capture_output=True, text=True)
@@ -627,7 +641,7 @@ def extract_text(path, ext):
     if ext in HTML_EXT:
         return html_to_text(Path(path).read_bytes()), ""
     if ext in LEGACY:
-        soffice = shutil.which("soffice") or shutil.which("libreoffice")
+        soffice = find_soffice()
         if not soffice:
             raise MissingDep("LibreOffice（用來讀 .doc/.xls/.ppt 舊版檔案）")
         target = LEGACY[ext]
@@ -1207,6 +1221,8 @@ def main():
             "links": extract_links(new_text),
             "body": new_text[:BODY_LIMIT],
             "body_truncated": len(new_text) > BODY_LIMIT,
+            "body_file": "",
+            "_full": new_text if len(new_text) > BODY_LIMIT else None,
             "quoted_excerpt": m["quoted"][:QUOTE_EXCERPT_LIMIT],
             "_blobs": d.get("att_blobs", []),
             "_container_uid": m.get("container_uid"),
@@ -1227,8 +1243,15 @@ def main():
     att_stats = None
     if args.read_attachments:
         att_stats = process_attachments([(it, it["_blobs"]) for it in items], out, args.attach_chars)
+    long_count = 0
     for it in items:
         it.pop("_blobs", None)
+        full = it.pop("_full", None)
+        if full:   # 內文超過 BODY_LIMIT：emails.json／emails.txt 只放開頭，全文另存，判讀與出處核對都用全文
+            (out / "bodies").mkdir(exist_ok=True)
+            (out / "bodies" / f"{it['id']}.txt").write_text(full, encoding="utf-8")
+            it["body_file"], it["body_chars"] = f"bodies/{it['id']}.txt", len(full)
+            long_count += 1
 
     documents, doc_stats = collect_documents(doc_paths, folder, out, prev, show_tz, args.attach_chars)
     new_doc_count = sum(1 for d in documents if d["is_new"])
@@ -1296,7 +1319,8 @@ def main():
                 f.write(f"連結：{' | '.join(x['links'])}\n")
             f.write("\n" + (x["body"] or "（沒有新內容，可能是純轉寄）") + "\n")
             if x["body_truncated"]:
-                f.write("……（內文過長已截斷）\n")
+                f.write(f"……（內文過長，這裡只到前 {BODY_LIMIT} 字。全文 {x.get('body_chars', '?')} 字在 "
+                        f"{out / x['body_file'] if x.get('body_file') else '（未存）'}，判讀這封信前要把全文讀完）\n")
             if x["quoted_excerpt"] and len(x["body"]) < 80 and args.no_split:
                 f.write("\n[引用前文摘錄]\n" + x["quoted_excerpt"] + "\n")
             f.write("\n")
@@ -1319,6 +1343,8 @@ def main():
 
     print(f"讀取檔案：{len(files)} 個；信件：{len(items)} 封（檔案本文 {len(items) - quote_count}、從引用前文拆出 {quote_count}）；"
           f"去除重複：{dup + xdup} 封（跨檔重複 {xdup}）；系統信（已標記）：{sys_count} 封")
+    if long_count:
+        print(f"長信：{long_count} 封內文超過 {BODY_LIMIT} 字，emails.txt 只列開頭，全文存在 {out / 'bodies'}（判讀時要讀全文）")
     nodate = sum(1 for x in items if not x["date"])
     if nodate:
         print(f"注意：{nodate} 封引用信讀不到日期，排在最後，請人工判斷時間")

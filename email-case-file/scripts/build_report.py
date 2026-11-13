@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -541,6 +542,8 @@ def build_docx(r, path):
                 set_font(p.add_run("　待確認"), 10, True, WARN)
             elif d.get("confidence") == "中":
                 set_font(p.add_run("　（信心：中）"), 9.5, False, GREY)
+            if r.get("_flags", {}).get(id(d)):
+                set_font(p.add_run(f"　⚠ {r['_flags'][id(d)]}"), 10, True, WARN)
             para(doc, d.get("decision", ""), indent=0.6, space_after=2)
             if d.get("quote"):
                 para(doc, f"原文：「{d['quote']}」", size=10, italic=True, color=GREY, indent=0.6, space_after=2)
@@ -617,6 +620,9 @@ def build_docx(r, path):
         "信心程度：「高」表示信中有明確文字且說話者有權限；「中」表示需要一點推論（轉述、推算期限、只看到附件已寄出）；「低」主要是推論，報告中標示「待確認」。",
         "懸而未決天數：從問題最早被提出的日期，計算到本報告產出日期。",
         "出處的信件編號（E001 等）依真實寄件時間排序，對應資料夾中的原始信件檔；轉寄信裡引用的舊信也拆成獨立編號，連結指向收錄它的那個檔案，時間取自引用標頭（時區為推估）。增量整理時舊信沿用原編號，新信往後接號。出處與信件編號可直接點選開啟原信（需報告與信件資料夾保持原本的相對位置；Word 可能跳出安全提示）。原文引用保留原語言。",
+        ("原文核對：產出報告時，程式已逐條確認決策的原文關鍵句真的出現在所標示的信件（或附件）裡，出處編號與日期也和信件相符。"
+         "標「⚠」的條目表示沒核對到或無法核對，使用前請開原信確認。核對只確認「這句話在信裡」，不代表對這句話的解讀一定正確。"
+         if r.get("_verify") is not None else "原文核對：這份報告產出時沒有比對原始信件，原文與出處未經程式核對。"),
         "本報告由 AI 依信件內容整理，重要決策開會前請再核對原始信件。",
     ]:
         para(doc, line, size=9.5, color=GREY)
@@ -663,7 +669,9 @@ def build_html(r, path):
             b.append(none)
         for d in t["decisions"]:
             role = f"（{e(d.get('decider_role'))}）" if d.get("decider_role") else ""
-            b.append(f"<div class='card'><div class='ch'>{e(d.get('date'))}　{e(d.get('decider'))}{role} {warn(d.get('confidence'))}{mid(d)}</div>"
+            b.append(f"<div class='card'><div class='ch'>{e(d.get('date'))}　{e(d.get('decider'))}{role} {warn(d.get('confidence'))}{mid(d)}"
+                     + (f" <span class='warn'>⚠ {e(r['_flags'][id(d)])}</span>" if r.get("_flags", {}).get(id(d)) else "")
+                     + "</div>"
                      f"<p>{e(d.get('decision'))}</p>"
                      + (f"<blockquote>「{e(d.get('quote'))}」</blockquote>" if d.get("quote") else "")
                      + (f"<p class='muted'>備註：{e(d.get('note'))}</p>" if d.get("note") else "")
@@ -723,6 +731,61 @@ blockquote{margin:6px 0;padding-left:10px;border-left:3px solid var(--line);font
             f"<title>案卷整理：{e(r.get('title'))}</title><style>{css}</style></head><body>{''.join(b)}</body></html>")
     Path(path).write_text(page, encoding="utf-8")
 
+# ---------- 固定編號（key） ----------
+# 每條決策、未決、待辦、已完成都有一個不會變的編號。新舊報告用它比對，
+# 所以文字被改寫、補了期限或換了負責人，還是認得出是同一條。
+
+KEY_PREFIX = {"decisions": "DEC", "pending": "PEN", "todos": "TODO", "completed": "DONE"}
+KEY_TEXT = {"decisions": "decision", "pending": "issue", "todos": "item", "completed": "item"}
+
+
+def _sig(kind, it):
+    return (kind, (it.get("source") or {}).get("id", ""), str(it.get(KEY_TEXT[kind], "")).strip())
+
+
+def assign_keys(r, prev_report=None):
+    """已有 key 的沿用；沒有的，先用「出處＋文字」找上次報告的同一條接手它的 key，還是沒有就發新號。
+    同一份報告裡 key 重複時，後面那條視為沒有 key。回傳新發了幾個號。"""
+    def walk(rep_):
+        for t in (rep_ or {}).get("topics", []):
+            for kind in KEY_PREFIX:
+                for it in t.get(kind, []):
+                    yield kind, it
+
+    top = {p: 0 for p in KEY_PREFIX.values()}
+
+    def note(key):
+        m = re.fullmatch(r"([A-Z]+)-(\d+)", str(key or ""))
+        if m and m.group(1) in top:
+            top[m.group(1)] = max(top[m.group(1)], int(m.group(2)))
+
+    def number(rep_, inherit):
+        seen, todo, made = set(), [], 0
+        for kind, it in walk(rep_):
+            k = it.get("key")
+            if k and k not in seen:
+                seen.add(k)
+            else:
+                it.pop("key", None)
+                todo.append((kind, it))
+        for kind, it in todo:
+            k = inherit.get(_sig(kind, it))
+            if not k or k in seen:
+                top[KEY_PREFIX[kind]] += 1
+                k = f"{KEY_PREFIX[kind]}-{top[KEY_PREFIX[kind]]:03d}"
+                made += 1
+            it["key"] = k
+            seen.add(k)
+        return made
+
+    for rep_ in (prev_report, r):
+        for _, it in walk(rep_):
+            note(it.get("key"))
+    number(prev_report, {})    # 舊版資料檔沒有 key：先在記憶體裡補上，才能和這次比對
+    inherit = {_sig(kind, it): it["key"] for kind, it in walk(prev_report)}
+    return number(r, inherit)
+
+
 # ---------- 增量：自上次報告以來的變化 ----------
 
 def _items(report):
@@ -748,8 +811,8 @@ def compute_changes(r, prev, new_ids):
     def todo_line(x, extra=""):
         return f"{x.get('item', '')}｜{x.get('owner') or '負責人未定'}｜{x.get('due') or '期限未定'}{extra}（{x['_topic']}）"
 
-    cur_todo_keys = {(_sid(x), str(x.get("item", "")).strip()) for x in cur["todos"]}
-    cur_pend_keys = {(_sid(x), str(x.get("issue", "")).strip()) for x in cur["pending"]}
+    cur_todo_keys = {x.get("key") for x in cur["todos"]}
+    cur_pend_keys = {p.get("key") for p in cur["pending"]}
     cur_pend_src = {_sid(x) for x in cur["pending"]}
 
     newly, still = [], 0
@@ -770,10 +833,10 @@ def compute_changes(r, prev, new_ids):
         ("新增已完成", [f"{x.get('item', '')}｜{x.get('completed_date', '')}（{x['_topic']}）"
                    for x in cur["completed"] if isnew(x)]),
         ("已移出待辦（可能已完成或取消，請確認）",
-         [todo_line(x) for x in old["todos"] if (_sid(x), str(x.get("item", "")).strip()) not in cur_todo_keys]),
+         [todo_line(x) for x in old["todos"] if x.get("key") not in cur_todo_keys]),
         ("已不在未決清單（可能已決策或結案）",
          [f"{p.get('issue', '')}（{p['_topic']}）" for p in old["pending"]
-          if (_sid(p), str(p.get("issue", "")).strip()) not in cur_pend_keys and _sid(p) not in cur_pend_src]),
+          if p.get("key") not in cur_pend_keys and _sid(p) not in cur_pend_src]),
     ]
     return {"prev_gen": pr.get("generated_date", ""), "new_email_count": len(new_ids),
             "sections": [(a, b) for a, b in sections if b], "still_overdue": still}
@@ -943,23 +1006,23 @@ def build_xlsx(r, path):
     ws = wb.active
     ws.title = "待辦"
     todos = r["_todos"]
-    sheet(ws, ["議題", "事項", "負責人", "期限", "狀態", "信心", "備註", "出處", "完成？"],
+    sheet(ws, ["議題", "事項", "負責人", "期限", "狀態", "信心", "備註", "出處", "完成？", "編號"],
           [[x["topic"], x.get("item", ""), x.get("owner", ""), x.get("due") or "未定", todo_status(x, gen),
-            x.get("confidence", ""), x.get("note", ""), _sid(x), ""] for x in todos],
-          [16, 44, 18, 12, 12, 7, 28, 8, 9], 7, [file_href(r, (x.get("source") or {}).get("file")) for x in todos],
+            x.get("confidence", ""), x.get("note", ""), _sid(x), "", x.get("key", "")] for x in todos],
+          [16, 44, 18, 12, 12, 7, 28, 8, 9, 10], 7, [file_href(r, (x.get("source") or {}).get("file")) for x in todos],
           date_cols=(3,))
     pend = r["_pending"]
-    sheet(wb.create_sheet("尚未決策"), ["議題", "問題", "提出者", "提出日", "等待", "懸而未決（天）", "選項", "備註", "出處"],
+    sheet(wb.create_sheet("尚未決策"), ["議題", "問題", "提出者", "提出日", "等待", "懸而未決（天）", "選項", "備註", "出處", "編號"],
           [[p["topic"], p.get("issue", ""), p.get("raised_by", ""), p.get("raised_date", ""), p.get("waiting_on", ""),
-            p.get("days_pending"), "；".join(p.get("options") or []), p.get("note", ""), _sid(p)] for p in pend],
-          [16, 44, 16, 12, 20, 12, 30, 28, 8], 8, [file_href(r, (p.get("source") or {}).get("file")) for p in pend],
+            p.get("days_pending"), "；".join(p.get("options") or []), p.get("note", ""), _sid(p), p.get("key", "")] for p in pend],
+          [16, 44, 16, 12, 20, 12, 30, 28, 8, 10], 8, [file_href(r, (p.get("source") or {}).get("file")) for p in pend],
           date_cols=(3,))
     decs = sorted([{**d, "_topic": t["name"]} for t in r.get("topics", []) for d in t["decisions"]],
                   key=lambda d: d.get("date", ""))
-    sheet(wb.create_sheet("已決策"), ["議題", "日期", "決定者", "角色", "決策", "原文", "信心", "備註", "出處"],
+    sheet(wb.create_sheet("已決策"), ["議題", "日期", "決定者", "角色", "決策", "原文", "信心", "備註", "出處", "編號"],
           [[d["_topic"], d.get("date", ""), d.get("decider", ""), d.get("decider_role", ""), d.get("decision", ""),
-            d.get("quote", ""), d.get("confidence", ""), d.get("note", ""), _sid(d)] for d in decs],
-          [16, 12, 14, 16, 44, 40, 7, 28, 8], 8, [file_href(r, (d.get("source") or {}).get("file")) for d in decs],
+            d.get("quote", ""), d.get("confidence", ""), d.get("note", ""), _sid(d), d.get("key", "")] for d in decs],
+          [16, 12, 14, 16, 44, 40, 7, 28, 8, 10], 8, [file_href(r, (d.get("source") or {}).get("file")) for d in decs],
           date_cols=(1,))
     figs = [(f.get("name", ""), f.get("unit", ""), v) for f in r.get("figures") or [] for v in figure_rows(f)]
     if figs:
@@ -1024,8 +1087,19 @@ def build_ics(r, path):
 
 # ---------- PDF ----------
 
+def find_soffice():
+    """找 LibreOffice。Windows、macOS 裝好後通常不在 PATH 裡，要到預設安裝位置找。"""
+    hit = shutil.which("soffice") or shutil.which("libreoffice")
+    if hit:
+        return hit
+    cands = [Path(os.environ[k]) / "LibreOffice" / "program" / "soffice.exe"
+             for k in ("ProgramFiles", "ProgramFiles(x86)") if os.environ.get(k)]
+    cands.append(Path("/Applications/LibreOffice.app/Contents/MacOS/soffice"))
+    return next((str(c) for c in cands if c.is_file()), None)
+
+
 def build_pdf(docx_path, pdf_path):
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    soffice = find_soffice()
     if soffice:
         with tempfile.TemporaryDirectory() as tmp:
             subprocess.run([soffice, "--headless", "--convert-to", "pdf", "--outdir", tmp, str(docx_path)],
@@ -1042,6 +1116,192 @@ def build_pdf(docx_path, pdf_path):
         return False
 
 # ---------- 主程式 ----------
+
+# ---------- 出處核對 ----------
+# 報告的價值是「可佐證」。AI 寫 report.json 時可能抄錯原文、記錯信件編號或日期，
+# 所以產出報告前，逐條回原信比對一次：對不上的不產出（或加 --allow-unverified 後標紅）。
+
+_QUOTE_MAP = str.maketrans({"“": '"', "”": '"', "„": '"', "‟": '"', "「": '"', "」": '"', "『": '"', "』": '"',
+                            "‘": "'", "’": "'", "‚": "'", "`": "'", "–": "-", "—": "-"})
+
+
+def _nt(s):
+    """比對用的正規化：全半形、引號、大小寫、空白與換行的差異都不算不同。"""
+    s = unicodedata.normalize("NFKC", str(s or "")).translate(_QUOTE_MAP)
+    s = re.sub(r"[​‌‍﻿­]", "", s)
+    return re.sub(r"\s+", "", s).casefold()
+
+
+def _fragments(quote):
+    """原文裡用「…」省略中間時，拆成幾段，每一段都要在信裡找得到。"""
+    parts = [p.strip("\"'") for p in re.split(r"[\[(]?\.{3,}[\])]?|⋯+", _nt(quote))]
+    parts = [p for p in parts if p]
+    return [p for p in parts if len(p) >= 4] or parts
+
+
+def _has(hay, frags):
+    return bool(frags) and all(f in hay for f in frags)
+
+
+def _digits(s):
+    """去掉數字中間的千分位、小數點與空白：36,500、36.500、36 500 都變成 36500。"""
+    return re.sub(r"(?<=\d)[,.\s](?=\d)", "", unicodedata.normalize("NFKC", str(s or "")))
+
+
+def verify_report(r, emails_data, workdir):
+    """回傳 {errors, notes, fixed, flags, quotes, quotes_ok}。
+    errors：出處編號不存在、原文在出處裡找不到（預設會擋下報告）。
+    notes：請人確認的事（無法核對、日期不一致、數字找不到）。
+    fixed：已依 emails.json 自動更正的出處日期。
+    flags：{id(條目): 要印在報告上的警示文字}。"""
+    emails = {e["id"]: e for e in emails_data.get("emails", [])}
+    docs = {d["id"]: d for d in emails_data.get("documents", [])}
+    errors, notes, fixed, flags = [], [], [], {}
+    stat = {"quotes": 0, "quotes_ok": 0}
+    body_cache, file_cache, full_ok = {}, {}, set()
+
+    def body_of(eid):
+        if eid not in body_cache:
+            e, body = emails[eid], emails[eid].get("body", "")
+            if e.get("body_file"):   # 長信的全文另存在工作目錄
+                try:
+                    body = (Path(workdir) / e["body_file"]).read_text(encoding="utf-8")
+                    full_ok.add(eid)
+                except OSError:
+                    pass
+            body_cache[eid] = (_nt(f"{e.get('subject', '')}\n{body}"), _nt(e.get("quoted_excerpt", "")))
+        return body_cache[eid]
+
+    def read_text(d):
+        tf = d.get("text_file")
+        if tf and tf not in file_cache:
+            try:
+                file_cache[tf] = (Path(workdir) / tf).read_text(encoding="utf-8")
+            except OSError:
+                file_cache[tf] = ""
+        return file_cache.get(tf, "") or d.get("excerpt", "")
+
+    def att_text(entry, name=""):
+        """這封信（或這個檔案）讀得到的附件文字。回傳 (正規化文字, 讀到幾個)。"""
+        det = entry.get("attachment_details") or []
+        named = [d for d in det if name and str(d.get("name", "")).casefold() == str(name).casefold()]
+        texts = []
+        for d in named or det:
+            if d.get("status") == "duplicate" and d.get("duplicate_of") in emails:   # 重寄的同一份附件，文字存在第一次出現的那封
+                texts += [read_text(o) for o in emails[d["duplicate_of"]].get("attachment_details") or []]
+            else:
+                texts.append(read_text(d))
+        texts = [t for t in texts if t]
+        return _nt("\n".join(texts)), len(texts)
+
+    def check_source(it, where, date_key="date"):
+        """出處編號要存在；信件的日期以 emails.json 為準。回傳 (來源資料, 是不是信件)。"""
+        s = it.get("source")
+        sid = s.get("id") if isinstance(s, dict) else None
+        if not sid:
+            errors.append(f"{where}：沒有填出處（source.id）")
+            return None, False
+        if sid in docs:
+            return docs[sid], False
+        if sid not in emails:
+            errors.append(f"{where}：出處 {sid} 不存在（emails.json 裡沒有這個編號）")
+            flags[id(it)] = "出處編號不存在"
+            return None, False
+        e = emails[sid]
+        real = e.get("date_display", "")
+        if parse_date(real):
+            if s.get("date") and str(s["date"])[:10] != real[:10]:
+                fixed.append(f"{where}：出處 {sid} 的日期 {s['date']} → {real}")
+                s["date"] = real
+            elif not s.get("date"):
+                s["date"] = real
+        for k in ("subject", "sender"):
+            if not s.get(k) and e.get(k):
+                s[k] = e[k]
+        return e, True
+
+    def check_quote(d, where):
+        entry, is_email = check_source(d, where)
+        if entry is None:
+            return
+        s, q = d["source"], d.get("quote")
+        if is_email:
+            ed, dd = parse_date(entry.get("date_display")), parse_date(d.get("date"))
+            if ed and dd and abs((dd - ed).days) > 1:
+                notes.append(f"{where}：決策日期 {d.get('date')} 和出處 {s['id']} 的寄件日 {ed} 不同，請確認是哪一天定的")
+        if not q:
+            notes.append(f"{where}：沒有附原文關鍵句")
+            return
+        stat["quotes"] += 1
+        frags = _fragments(q)
+        body, quoted = body_of(s["id"]) if is_email else ("", "")
+        if s.get("attachment") or not is_email:
+            text, n = att_text(entry, s.get("attachment", ""))
+            if _has(text, frags) or _has(body, frags):
+                stat["quotes_ok"] += 1
+            elif n == 0:
+                notes.append(f"{where}：原文出自附件／檔案《{s.get('attachment') or entry.get('name', '')}》，內容沒讀到，無法核對")
+                flags[id(d)] = "原文未核對（附件未讀取）"
+            else:
+                errors.append(f"{where}：原文在 {s['id']} 的附件和內文裡都找不到：「{q[:60]}」")
+                flags[id(d)] = "原文核對不到"
+            return
+        if _has(body, frags):
+            stat["quotes_ok"] += 1
+        elif _has(quoted, frags):
+            stat["quotes_ok"] += 1
+            notes.append(f"{where}：原文在 {s['id']} 引用的舊信裡，不是寄件者這次寫的，請確認決定者與日期")
+            flags[id(d)] = "原文出自引用的舊信"
+        elif entry.get("body_truncated") and s["id"] not in full_ok:
+            notes.append(f"{where}：{s['id']} 內文過長被截斷，原文無法核對，請開原信確認")
+            flags[id(d)] = "原文未核對（信件過長）"
+        else:
+            others = [i for i in emails if i != s["id"] and _has(body_of(i)[0], frags)][:5]
+            hint = f"；同一句出現在 {'、'.join(others)}，編號可能寫錯" if others else "；可能抄錯字、改寫過或翻譯過"
+            errors.append(f"{where}：原文在 {s['id']} 裡找不到：「{q[:60]}」{hint}")
+            flags[id(d)] = "原文核對不到"
+
+    for t in r.get("topics", []):
+        tn = t.get("short_name") or t.get("name", "")
+        for d in t.get("decisions", []):
+            check_quote(d, f"［{tn}］決策「{str(d.get('decision', ''))[:24]}」")
+        for kind, label, key in (("pending", "未決", "issue"), ("todos", "待辦", "item"), ("completed", "已完成", "item")):
+            for it in t.get(kind, []):
+                check_source(it, f"［{tn}］{label}「{str(it.get(key, ''))[:24]}」")
+        for x in t.get("timeline", []):
+            xid = x.get("id")
+            if xid in emails:
+                real = emails[xid].get("date_display", "")
+                if parse_date(real) and str(x.get("date", ""))[:10] != real[:10]:
+                    if x.get("date"):
+                        fixed.append(f"［{tn}］時間序 {xid} 的日期 {x['date']} → {real}")
+                    x["date"] = real
+            elif xid not in docs:
+                errors.append(f"［{tn}］時間序條目的編號 {xid or '（空白）'} 不存在")
+
+    for f in r.get("figures") or []:
+        for v in f.get("versions", []):
+            where = f"［數字］{f.get('name', '')} {v.get('date', '')} {v.get('value', '')}"
+            entry, is_email = check_source(v, where)
+            if entry is None:
+                continue
+            nums = [n for n in re.findall(r"\d+", _digits(v.get("value"))) if len(n) >= 2]
+            hay = (body_of(entry["id"])[0] + body_of(entry["id"])[1]) if is_email else ""
+            hay = _digits(hay + att_text(entry)[0])
+            if nums and not all(n in hay for n in nums):
+                notes.append(f"{where}：這個數字在出處 {entry['id']} 裡找不到，請確認（可能寫法不同，例如 36.5K）")
+
+    return {"errors": errors, "notes": notes, "fixed": fixed, "flags": flags, **stat}
+
+
+def print_verify(v):
+    print(f"出處核對：原文關鍵句 {v['quotes']} 條，其中 {v['quotes_ok']} 條在出處裡找到。")
+    for title, rows in (("未通過（一定要改）", v["errors"]), ("請確認", v["notes"]), ("已自動更正", v["fixed"])):
+        if rows:
+            print(f"【{title}】{len(rows)} 條")
+            for x in rows:
+                print(f"  - {x}")
+
 
 def unique_base(outdir, gen):
     base = f"案卷整理_{gen}"
@@ -1080,6 +1340,9 @@ def main():
     ap.add_argument("--emails", help="parse_emails.py 產出的 emails.json；提供後才有來源超連結、增量比對與下次可比對的索引")
     ap.add_argument("--prev", help="指定上次報告資料檔（*.data.json）；預設用 emails.json 記錄的那一份")
     ap.add_argument("--no-prev", action="store_true", help="不產生「自上次報告以來的變化」")
+    ap.add_argument("--allow-unverified", action="store_true",
+                    help="出處核對有「未通過」的條目時仍產出報告（該條會標「原文核對不到」）；預設是不產出")
+    ap.add_argument("--check-only", action="store_true", help="只做出處核對，不產出任何檔案")
     args = ap.parse_args()
     try:   # Windows 主控台預設 cp950，中文訊息會變亂碼
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1095,7 +1358,19 @@ def main():
 
     r = json.loads(Path(args.report).read_text(encoding="utf-8"))
     r["_outdir"] = str(outdir)
-    r = prepare(r, files)
+
+    if emails_data:
+        v = verify_report(r, emails_data, Path(args.emails).resolve().parent)
+        print_verify(v)
+        r["_flags"], r["_verify"] = v["flags"], {k: len(v[k]) for k in ("errors", "notes", "fixed")}
+        if v["errors"] and not args.allow_unverified:
+            print("沒有產出報告。請回原信核對上面「未通過」的條目，改好 report.json 後重跑。"
+                  "確定要照樣產出時加 --allow-unverified，這些條目在報告裡會標「原文核對不到」。")
+            sys.exit(2)
+    else:
+        print("注意：沒有提供 --emails，無法核對原文與出處。")
+    if args.check_only:
+        return
 
     prev = None
     if not args.no_prev and emails_data:
@@ -1105,6 +1380,9 @@ def main():
             name = (emails_data.get("prev") or {}).get("file")
             if name and (outdir / name).exists():
                 prev = load_json(outdir / name)
+    assign_keys(r, (prev or {}).get("report"))
+    r = prepare(r, files)
+
     if prev:
         r["_changes"] = compute_changes(r, prev, {e["id"] for e in emails_data["emails"] if e.get("is_new")})
 
@@ -1122,7 +1400,8 @@ def main():
         if build_pdf(docx_path, pdf_path):
             made.append(pdf_path)
         else:
-            print("PDF 轉檔失敗：找不到 LibreOffice 或 Word。請用 Word 開啟 docx 後「另存為 PDF」。")
+            print("PDF 轉檔失敗：找不到 LibreOffice，也沒辦法用本機的 Word 轉（Windows 可先 pip install docx2pdf 再試）。"
+                  "最簡單的做法：用 Word 開啟 docx 後「另存為 PDF」。")
         if "docx" not in fmts:
             docx_path.unlink(missing_ok=True)
     if "html" in fmts:

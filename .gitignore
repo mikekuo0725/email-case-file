@@ -6,3 +6,6 @@ __pycache__/
 *.msg
 *.eml
 *.pst
+
+# 測試用的假信件（虛構資料）要進版控
+!tests/fixtures/**
