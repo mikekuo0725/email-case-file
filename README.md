@@ -120,11 +120,14 @@ pip install extract-msg python-docx openpyxl
 | 🧵 串信串 | 用信件標頭的回覆關係把同一串接起來，主旨改了也不會斷 |
 | 👥 人物表 | 合併同一個人的不同信箱和中英文名字，標出誰能拍板 |
 | 💬 原文為證 | 決策附上信裡的原句，保留原語言不翻譯 |
+| ✅ 原文自動核對 | 產出報告前，程式逐條確認原文真的在那封信裡、編號和日期對得上；對不上就不產出 |
 | ⏳ 懸而未決天數 | 自動算出每個問題已經等了幾天 |
 | 💸 數字怎麼變 | 金額、單價、數量來回談的每一版：誰提的、哪天、多少 |
 | 🗂️ 讀資料夾裡的檔案 | 信件旁邊的 PDF、Word、Excel、PowerPoint、文字檔也會讀，編號 D001 起，可以當出處 |
 | 📄 讀附件 | 可選。讀信裡夾帶的報價單、規格書，比對版本差異（例如單價 120 → 125） |
-| 🔁 增量更新 | 下次只處理新信，報告最前面列出「上次之後有什麼變化」 |
+| 🔁 增量更新 | 下次只處理新信，報告最前面列出「上次之後有什麼變化」。每條待辦、未決都有固定編號（TODO-003），文字改寫了也認得是同一條 |
+| ⚡ 快問 | 整理過一次之後，問「模具費最後多少？」不用重跑，直接查上次的案卷回答，並提醒有沒有更新的信還沒讀 |
+| 📜 長信讀到底 | 超過 8,000 字的信另存全文，決定寫在最後面也不會漏 |
 | 🤝 分工判讀 | 超過 120 封時，分給多個小幫手同時讀，再合併 |
 | 🗣️ 說人話 | Claude 寫的句子去掉 AI 套路、用台灣用語；原文、人名、數字一字不動 |
 | 🌏 English | 用英文跟 Claude 講話，報告文字就用淺白英文寫：先講結論、一句一件事 |
@@ -156,9 +159,15 @@ pip install extract-msg python-docx openpyxl
 
 每一條都有信心等級。拿不準的會標「待確認」，並寫出原因，讓你知道開會前要再問清楚哪幾條。出處都能點開原信對照。
 
+另外，產出報告前程式會自動核對一次：決策附的原文要真的出現在那封信裡，信件編號要存在，日期要對得上。對不上的話不會產出報告，Claude 得先回去改。這一步防的是「抄錯字、記錯是哪一封」；至於那句話的意思有沒有解讀對，還是要靠你看原文判斷。
+
 ### 為什麼報告的連結打不開？
 
 連結指向資料夾裡的原始信件。報告搬到別的地方時，要連信件資料夾一起搬。
+
+### 我只是想問一件事，也要整個重跑嗎？
+
+不用。資料夾整理過一次之後，直接問「外箱那件事誰在拖？」「我這週有哪些待辦？」，Claude 會查上次的案卷回答，附上日期、決定者和出處。資料夾裡有比上次更新的信時，它會提醒你答案不含那些信。
 
 ### 可以只看新信嗎？
 
@@ -179,6 +188,20 @@ pip install extract-msg python-docx openpyxl
 `.pst` 需要電腦裡有 `readpst`。裝不起來的話，在 Outlook 把信另存成 `.msg` 就可以。
 
 ---
+
+## 改腳本之後：跑測試
+
+`tests/` 裡有一包虛構的假信件和兩支測試，不需要另外裝測試工具：
+
+```bash
+python tests/test_verify.py
+```
+
+```bash
+python tests/test_pipeline.py
+```
+
+第一支測「原文核對」；第二支用假信件把解析、產出報告、快問、增量更新整條跑一遍。兩支最後都印「全部通過」才算沒弄壞東西。
 
 ## 致謝
 
@@ -205,7 +228,10 @@ A Claude skill that turns a folder of saved Outlook emails (.msg, .eml, .pst), p
 - "How the numbers changed" table for prices and quantities under negotiation
 - Reads other files in the folder (PDF, Word, Excel, PowerPoint, text), numbered D001 onward, usable as sources
 - Optional: reads email attachments and compares versions
-- Incremental updates with a "changes since the last report" section
+- Incremental updates with a "changes since the last report" section; every to-do and open question keeps a stable key (TODO-003)
+- Before a report is built, a script checks that each quoted sentence really appears in the cited email and that IDs and dates match; if not, no report is produced
+- Quick questions ("what was the final tooling cost?") are answered from the last case file without re-running
+- Tests with fictional emails: `python tests/test_verify.py` and `python tests/test_pipeline.py`
 - Large folders (120+ emails) are split across parallel subagents
 - Talk to Claude in English and the report text is written in plain English: answer first, one idea per sentence, active voice (rules adapted from [isas1/skills](https://github.com/isas1/skills) `eli5-succinct`, MIT). Section headings and table labels are still in Chinese
 - Chinese report text avoids stock AI phrasing and uses Taiwan wording (rules adapted from [speak-human-tw](https://github.com/Raymondhou0917/speak-human-tw), MIT)
