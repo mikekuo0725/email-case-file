@@ -14,7 +14,6 @@ import argparse
 import html as H
 import json
 import os
-import posixpath
 import re
 import shutil
 import subprocess
@@ -62,32 +61,37 @@ def src_text(s):
     return "　".join(p for p in parts if p)
 
 
-def _norm(p):
-    return str(p).replace("\\", "/").rstrip("/")
+def file_href(r, f, html=False):
+    """信件檔案的連結。.pst 內的信連到 .pst 檔本身；資訊不足回傳空字串。
 
-
-def file_href(r, f):
-    """信件檔案相對於報告所在資料夾的連結（URL 編碼）。.pst 內的信連到 .pst 檔本身；資訊不足回傳空字串。"""
+    能用相對路徑就用相對路徑（報告連同信件資料夾一起搬也不會斷）；不同磁碟時只能用絕對路徑。
+    Word、Excel 不會把 %E6%A9… 這種編碼轉回中文，所以 Office 連結只把 % 和 # 換掉（# 會被當成檔案內的位置），
+    中文、空白保持原樣；HTML 給瀏覽器用，照標準 URL 編碼。
+    """
     if not f:
         return ""
     f = str(f).split(" › ")[0].replace("\\", "/")
-    folder, outdir = r.get("folder"), r.get("_outdir")
-    if not folder or not outdir:
+    root, outdir = r.get("_mail_root"), r.get("_outdir")
+    if not root or not outdir:
         return ""
-    if _norm(folder) == _norm(outdir):
-        rel = f
-    else:
-        try:
-            rel = posixpath.relpath(_norm(folder) + "/" + f, _norm(outdir))
-        except ValueError:
-            return ""
-    return urllib.parse.quote(rel)
+    target = os.path.abspath(os.path.join(root, f))
+    if not os.path.exists(target):
+        r.setdefault("_missing_links", set()).add(target)
+    try:
+        rel = os.path.relpath(target, outdir).replace("\\", "/")
+    except ValueError:   # Windows 上不同磁碟（例如信在 G:、報告在 D:）
+        rel = None
+    if html:
+        return urllib.parse.quote(rel) if rel is not None else Path(target).as_uri()
+    if rel is not None:
+        return rel.replace("%", "%25").replace("#", "%23")
+    return target
 
 
 def src_html(r, e, s, id_only=False):
     s = s or {}
     text = (s.get("id", "") if id_only else src_text(s))
-    href = file_href(r, s.get("file"))
+    href = file_href(r, s.get("file"), html=True)
     return f"<a href='{e(href)}'>{e(text)}</a>" if href and text else e(text)
 
 
@@ -252,7 +256,8 @@ def render_master_html(r, e):
     if not rows:
         return ""
     multi = len(r.get("topics", [])) > 1
-    link = lambda x: (f"<a href='{e(file_href(r, x['file']))}'>{e(x['id'])}</a>" if file_href(r, x["file"]) else e(x["id"]))
+    link = lambda x: (f"<a href='{e(file_href(r, x['file'], html=True))}'>{e(x['id'])}</a>"
+                      if file_href(r, x["file"], html=True) else e(x["id"]))
     head = ["日期", "誰", "發生什麼", "類型"] + (["議題"] if multi else []) + ["信件"]
     body = "".join("<tr>" + "".join(f"<td>{c}</td>" for c in
                                     [e(x["date"]), e(x["who"]), e(x["what"]), e(x["tag"])]
@@ -318,7 +323,11 @@ def render_entries_docx(doc, r, entries, show_topic=False):
                 bp.paragraph_format.first_line_indent = Cm(-0.4)
                 set_font(bp.add_run("▪ " + q), 10)
         if x.get("links"):
-            labelled(doc, "連結：", "　".join(x["links"]), indent=0.4)
+            lp = labelled(doc, "連結：", "", indent=0.4)
+            for i, u in enumerate(x["links"]):
+                if i:
+                    lp.add_run("　")
+                add_hyperlink(lp, u, u, size=10)
         para(doc, space_after=4)
 
 
@@ -329,7 +338,7 @@ def render_entries_html(r, entries, e, show_topic=False):
         if x.get("cc"):
             who += f"（副本：{e(x['cc'])}）"
         topic = f" 〔{e(x['_topic'])}〕" if show_topic and x.get("_topic") else ""
-        href = file_href(r, x.get("file"))
+        href = file_href(r, x.get("file"), html=True)
         idt = f"<a href='{e(href)}'>[{e(x.get('id'))}]</a>" if href else f"[{e(x.get('id'))}]"
         h = [f"<div class='card'><div class='ch'>{e(x.get('date'))} <span class='muted'>{idt}{topic}</span></div>",
              f"<p class='muted'>寄／收：{who}</p>"]
@@ -1319,6 +1328,26 @@ def load_json(path):
         return None
 
 
+def mail_root(r, emails_data, emails_path):
+    """找出信件資料夾的絕對路徑（超連結以它為準）。
+
+    以 parse_emails.py 記在 emails.json 的 folder 為主（腳本寫的，比 report.json 裡手填的可靠）；
+    相對路徑時依序試目前目錄、emails.json 所在目錄，挑出「信件檔案真的找得到」的那個。
+    """
+    cands = [x for x in ((emails_data or {}).get("folder"), r.get("folder")) if x]
+    sample = [e["file"].split(" › ")[0] for e in (emails_data or {}).get("emails", [])[:20] if e.get("file")]
+    tried = []
+    for c in cands:
+        p = Path(c)
+        bases = [p] if p.is_absolute() else [Path.cwd() / p] + ([Path(emails_path).resolve().parent / p] if emails_path else [])
+        for b in bases:
+            b = Path(os.path.abspath(b))
+            tried.append(b)
+            if b.is_dir() and (not sample or any((b / s).exists() for s in sample)):
+                return str(b)
+    return str(tried[0]) if tried else ""
+
+
 def save_sidecar(r, emails_data, path):
     """存下本次報告與信件索引，下次增量整理時用來比對新舊信件與報告內容。"""
     rep_ = {k: v for k, v in r.items() if not k.startswith("_")}
@@ -1357,7 +1386,8 @@ def main():
         files.update({d["id"]: d["file"] for d in emails_data.get("documents", [])})
 
     r = json.loads(Path(args.report).read_text(encoding="utf-8"))
-    r["_outdir"] = str(outdir)
+    r["_outdir"] = str(outdir.resolve())
+    r["_mail_root"] = mail_root(r, emails_data, args.emails)
 
     if emails_data:
         v = verify_report(r, emails_data, Path(args.emails).resolve().parent)
@@ -1436,6 +1466,13 @@ def main():
         c = r["_changes"]
         print(f"自上次報告（{c['prev_gen']}）以來：新增 {c['new_email_count']} 封信；變化項目 "
               + "、".join(f"{a.split('（')[0]} {len(b)}" for a, b in c["sections"]))
+    miss = sorted(r.get("_missing_links") or [])
+    if miss:
+        print(f"注意：{len(miss)} 個出處連結指向的檔案不存在，點了會打不開（信件資料夾：{r.get('_mail_root')}）：")
+        for m in miss[:10]:
+            print(f"  {m}")
+        if len(miss) > 10:
+            print(f"  …另外 {len(miss) - 10} 個")
     for m in made:
         print(f"已產出：{m}")
     print(f"增量資料檔（下次整理要用，請保留）：{sidecar}")
