@@ -191,7 +191,7 @@ pip install extract-msg python-docx openpyxl
 
 ## 改腳本之後：跑測試
 
-`tests/` 裡有一包虛構的假信件和兩支測試，不需要另外裝測試工具：
+`tests/` 裡有一包虛構的假信件和三支測試，不需要另外裝測試工具：
 
 ```bash
 python tests/test_verify.py
@@ -200,6 +200,12 @@ python tests/test_verify.py
 ```bash
 python tests/test_pipeline.py
 ```
+
+```bash
+python tests/test_links.py
+```
+
+`test_links.py` 檢查報告裡每個本機檔案連結都點得開（中文、空白、# 的檔名，報告放在別的資料夾），以及信裡的網址抓得完整。
 
 第一支測「原文核對」；第二支用假信件把解析、產出報告、快問、增量更新整條跑一遍。兩支最後都印「全部通過」才算沒弄壞東西。
 
@@ -231,7 +237,7 @@ A Claude skill that turns a folder of saved Outlook emails (.msg, .eml, .pst), p
 - Incremental updates with a "changes since the last report" section; every to-do and open question keeps a stable key (TODO-003)
 - Before a report is built, a script checks that each quoted sentence really appears in the cited email and that IDs and dates match; if not, no report is produced
 - Quick questions ("what was the final tooling cost?") are answered from the last case file without re-running
-- Tests with fictional emails: `python tests/test_verify.py` and `python tests/test_pipeline.py`
+- Tests with fictional emails: `python tests/test_verify.py`, `python tests/test_pipeline.py` and `python tests/test_links.py`
 - Large folders (120+ emails) are split across parallel subagents
 - Talk to Claude in English and the report text is written in plain English: answer first, one idea per sentence, active voice (rules adapted from [isas1/skills](https://github.com/isas1/skills) `eli5-succinct`, MIT). Section headings and table labels are still in Chinese
 - Chinese report text avoids stock AI phrasing and uses Taiwan wording (rules adapted from [speak-human-tw](https://github.com/Raymondhou0917/speak-human-tw), MIT)

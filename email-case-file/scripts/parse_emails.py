@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from email import policy
@@ -464,14 +465,35 @@ def expand_pst(path, errors):
 
 # ---------- 主程式 ----------
 
-URL_RE = re.compile(r"https?://[^\s<>\"')\]」』）]+")
+# 只收 ASCII：中文信常把網址和後面的字黏在一起（「連結 https://drive.google.com/xxx請查收」），
+# 收進中文會讓連結打不開。網址裡真的有中文時，信件軟體幾乎都會先編成 %E4… 。
+URL_RE = re.compile(r"https?://[!#-;=?-~]+")
+SAFELINK_RE = re.compile(r"^https?://[^/]*safelinks\.protection\.outlook\.com/", re.I)
+
+
+def clean_url(u):
+    """修掉網址尾巴黏到的標點、不成對的右括號；Outlook SafeLinks 換回原本的網址（包過的連結會過期）。"""
+    while True:
+        v = u.rstrip(".,;:!?'\"*")
+        if v.endswith(")") and v.count(")") > v.count("("):
+            v = v[:-1]
+        if v.endswith("]") and v.count("]") > v.count("["):
+            v = v[:-1]
+        if v == u:
+            break
+        u = v
+    if SAFELINK_RE.match(u):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(u).query).get("url")
+        if q and q[0].startswith(("http://", "https://")):
+            return clean_url(q[0])
+    return u
 
 
 def extract_links(text):
     """抓出內文（新寫的部分）裡的外部連結，保留順序、去重。"""
     seen, out = set(), []
     for u in URL_RE.findall(text or ""):
-        u = u.rstrip(".,;:、，。")
+        u = clean_url(u)
         if u not in seen:
             seen.add(u)
             out.append(u)
@@ -1267,7 +1289,7 @@ def main():
     people, alias_candidates = build_people(items, prev_report.get("people"))
 
     result = {
-        "folder": str(folder),
+        "folder": str(folder.resolve()),
         "parsed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "file_count": len(files),
         "email_count": len(items),
